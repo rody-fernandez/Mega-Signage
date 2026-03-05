@@ -3,58 +3,109 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mega Signage - Admin</title>
+  <title>Mega Signage - Admin V2</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; width: 420px; }
-    input, select, button { padding: 8px; margin: 6px 0; width: 100%; }
-    small { color: #555; }
-    ul { padding-left: 18px; }
-    .ok { color: green; }
-    .bad { color: #b00; }
+    .row { display:flex; gap:16px; flex-wrap: wrap; align-items:flex-start; }
+    .card { border:1px solid #ddd; border-radius:12px; padding:12px; width: 420px; }
+    input, select, button { padding:8px; margin:6px 0; width:100%; }
+    small { color:#555; }
+    .ok{ color:green; } .bad{ color:#b00; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
   </style>
 </head>
 <body>
-  <h2>Mega Signage (MVP local)</h2>
-  <p><small>Subí videos, creá playlist por C10/C11/C12, y vinculá players por código.</small></p>
+  <h2>Mega Signage (V2 local)</h2>
+  <p><small>Playlists con nombre + resolución por pantalla + Sync Play.</small></p>
 
   <div class="row">
     <div class="card">
-      <h3>1) Subir video</h3>
-      <input type="file" id="file" accept="video/mp4,video/*" />
+      <h3>1) Subir medio (mp4/png/jpg)</h3>
+      <input type="file" id="file" />
       <button onclick="upload()">Subir</button>
       <div id="uploadStatus"></div>
     </div>
 
     <div class="card">
-      <h3>2) Crear playlist</h3>
-      <label>Pantalla</label>
-      <select id="screen"></select>
+      <h3>2) Pantallas y resolución</h3>
+      <select id="screenSelect"></select>
 
-      <label>Título</label>
-      <input id="title" placeholder="Ej: Promo Semana" />
+      <div class="grid">
+        <div>
+          <label><small>Floor</small></label>
+          <select id="floor">
+            <option value="P1">P1</option>
+            <option value="PB">PB</option>
+          </select>
+        </div>
+        <div>
+          <label><small>Orientación</small></label>
+          <select id="orientation">
+            <option value="vertical">vertical</option>
+            <option value="horizontal">horizontal</option>
+          </select>
+        </div>
+        <div>
+          <label><small>Width px</small></label>
+          <input id="wpx" type="number" min="0" />
+        </div>
+        <div>
+          <label><small>Height px</small></label>
+          <input id="hpx" type="number" min="0" />
+        </div>
+      </div>
 
-      <label>Seleccionar videos (en orden)</label>
-      <div id="mediaList"></div>
+      <label><small>Fit</small></label>
+      <select id="fit">
+        <option value="contain">contain (recomendado)</option>
+        <option value="cover">cover</option>
+      </select>
 
-      <button onclick="publish()">Publicar playlist</button>
-      <div id="publishStatus"></div>
+      <button onclick="saveScreen()">Guardar pantalla</button>
+      <div id="screenStatus"></div>
     </div>
 
     <div class="card">
-      <h3>3) Vincular Android Box</h3>
-      <small>En el Android abrís: <b>/public/player.html</b>. Va a mostrar un código.</small>
-      <label>Código de vinculación</label>
-      <input id="pairCode" placeholder="Ej: 482193" />
-      <label>Asignar a pantalla</label>
+      <h3>3) Playlists con nombre</h3>
+      <label><small>Pantalla</small></label>
+      <select id="plScreen"></select>
+
+      <label><small>Nombre playlist</small></label>
+      <input id="plName" placeholder="Ej: Columna 1 / Promo PB" />
+
+      <label><small>Seleccionar medios (orden manual: marcá en orden)</small></label>
+      <div id="mediaList"></div>
+
+      <button onclick="createPlaylist()">Crear playlist</button>
+      <div id="plStatus"></div>
+
+      <hr/>
+      <label><small>Playlists existentes (de la pantalla)</small></label>
+      <select id="plExisting"></select>
+      <button onclick="activatePlaylist()">Activar (Publicar)</button>
+      <div id="plActiveStatus"></div>
+    </div>
+
+    <div class="card">
+      <h3>4) Vincular Android Box</h3>
+      <small>En Android: <b>/public/player.html</b> → te muestra código.</small>
+      <label>Código</label>
+      <input id="pairCode" placeholder="Ej: 631496" />
+      <label>Pantalla</label>
       <select id="pairScreen"></select>
       <button onclick="pair()">Vincular</button>
       <div id="pairStatus"></div>
     </div>
 
     <div class="card">
-      <h3>4) Estado Players</h3>
+      <h3>5) Sync Play</h3>
+      <button onclick="syncPlay('ALL')">SYNC ALL</button>
+      <button onclick="syncPlay('P1')">SYNC PISO 1</button>
+      <button onclick="syncPlay('PB')">SYNC PLANTA BAJA</button>
+      <div id="syncStatus"></div>
+
+      <hr/>
+      <h3>Estado Players</h3>
       <button onclick="loadPlayers()">Actualizar</button>
       <div id="players"></div>
     </div>
@@ -63,43 +114,36 @@
 <script>
 const API = location.origin;
 
-async function init() {
-  const screens = await (await fetch(`${API}/api/screens`)).json();
-  const sel = document.getElementById("screen");
-  const sel2 = document.getElementById("pairScreen");
-  sel.innerHTML = screens.map(s => `<option>${s.name}</option>`).join("");
-  sel2.innerHTML = screens.map(s => `<option>${s.name}</option>`).join("");
+let screensCache = [];
+
+async function init(){
+  await loadScreens();
   await loadMedia();
   await loadPlayers();
 }
 window.onload = init;
 
-async function upload() {
+async function upload(){
   const f = document.getElementById("file").files[0];
   if (!f) return;
   const fd = new FormData();
   fd.append("file", f);
   document.getElementById("uploadStatus").innerHTML = "Subiendo...";
-  const r = await fetch(`${API}/api/media/upload`, { method: "POST", body: fd });
+  const r = await fetch(`${API}/api/media/upload`, { method:"POST", body: fd });
   const j = await r.json();
-  if (!r.ok) {
-    document.getElementById("uploadStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
-    return;
-  }
-  document.getElementById("uploadStatus").innerHTML = `<span class="ok">OK</span> (${j.filename})`;
-  await loadMedia();
+  document.getElementById("uploadStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
+  if (r.ok) await loadMedia();
 }
 
-async function loadMedia() {
+async function loadMedia(){
   const media = await (await fetch(`${API}/api/media`)).json();
   const box = document.getElementById("mediaList");
   box.innerHTML = "";
   media.forEach(m => {
-    const id = `m_${m.id}`;
     const div = document.createElement("div");
     div.innerHTML = `
       <label>
-        <input type="checkbox" id="${id}" data-mid="${m.id}">
+        <input type="checkbox" data-mid="${m.id}">
         ${m.original_name} <small>(${Math.round(m.size/1024/1024)} MB)</small>
       </label>
     `;
@@ -107,67 +151,143 @@ async function loadMedia() {
   });
 }
 
-async function publish() {
-  const screen = document.getElementById("screen").value;
-  const title = document.getElementById("title").value || `Playlist ${screen}`;
-  const checks = Array.from(document.querySelectorAll("#mediaList input[type=checkbox]"))
-    .filter(c => c.checked)
-    .map(c => Number(c.dataset.mid));
+async function loadScreens(){
+  const screens = await (await fetch(`${API}/api/screens`)).json();
+  screensCache = screens;
 
-  if (checks.length === 0) {
-    document.getElementById("publishStatus").innerHTML = `<span class="bad">Seleccioná al menos 1 video</span>`;
-    return;
-  }
+  const sel = document.getElementById("screenSelect");
+  const plScreen = document.getElementById("plScreen");
+  const pairScreen = document.getElementById("pairScreen");
 
-  document.getElementById("publishStatus").innerHTML = "Publicando...";
-  const r = await fetch(`${API}/api/playlist/${encodeURIComponent(screen)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, media_ids: checks })
-  });
-  const j = await r.json();
-  if (!r.ok) {
-    document.getElementById("publishStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
-    return;
-  }
-  document.getElementById("publishStatus").innerHTML = `<span class="ok">OK</span> playlist_id=${j.playlist_id}`;
+  const options = screens.map(s => `<option value="${s.name}">${s.floor}-${s.name}</option>`).join("");
+  sel.innerHTML = options;
+  plScreen.innerHTML = options;
+  pairScreen.innerHTML = options;
+
+  sel.onchange = fillScreenForm;
+  plScreen.onchange = loadPlaylistsForScreen;
+
+  fillScreenForm();
+  await loadPlaylistsForScreen();
 }
 
-async function pair() {
+function fillScreenForm(){
+  const name = document.getElementById("screenSelect").value;
+  const s = screensCache.find(x => x.name === name);
+  if (!s) return;
+  document.getElementById("floor").value = s.floor || "P1";
+  document.getElementById("orientation").value = s.orientation || "vertical";
+  document.getElementById("wpx").value = s.width_px || 0;
+  document.getElementById("hpx").value = s.height_px || 0;
+  document.getElementById("fit").value = s.fit || "contain";
+}
+
+async function saveScreen(){
+  const name = document.getElementById("screenSelect").value;
+  const payload = {
+    name,
+    floor: document.getElementById("floor").value,
+    orientation: document.getElementById("orientation").value,
+    width_px: Number(document.getElementById("wpx").value || 0),
+    height_px: Number(document.getElementById("hpx").value || 0),
+    fit: document.getElementById("fit").value
+  };
+
+  const r = await fetch(`${API}/api/screens/update`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json();
+  document.getElementById("screenStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
+  if (r.ok) await loadScreens();
+}
+
+async function createPlaylist(){
+  const screen_name = document.getElementById("plScreen").value;
+  const name = document.getElementById("plName").value.trim();
+  const media_ids = Array.from(document.querySelectorAll("#mediaList input[type=checkbox]"))
+    .filter(x => x.checked)
+    .map(x => Number(x.dataset.mid));
+
+  if (!name) { document.getElementById("plStatus").innerHTML = `<span class="bad">Poné un nombre</span>`; return; }
+  if (!media_ids.length) { document.getElementById("plStatus").innerHTML = `<span class="bad">Marcá al menos 1 medio</span>`; return; }
+
+  const r = await fetch(`${API}/api/playlists/create`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ name, screen_name, media_ids })
+  });
+  const j = await r.json();
+  document.getElementById("plStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
+  if (r.ok) {
+    // desmarcar checks
+    document.querySelectorAll("#mediaList input[type=checkbox]").forEach(x => x.checked=false);
+    document.getElementById("plName").value = "";
+    await loadPlaylistsForScreen();
+  }
+}
+
+async function loadPlaylistsForScreen(){
+  const screen = document.getElementById("plScreen").value;
+  const pls = await (await fetch(`${API}/api/playlists/${encodeURIComponent(screen)}`)).json();
+  const sel = document.getElementById("plExisting");
+  sel.innerHTML = pls.map(p => `<option value="${p.id}">${p.name} (id:${p.id})</option>`).join("");
+}
+
+async function activatePlaylist(){
+  const screen_name = document.getElementById("plScreen").value;
+  const playlist_id = Number(document.getElementById("plExisting").value);
+  if (!playlist_id) return;
+
+  const r = await fetch(`${API}/api/playlists/activate`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ screen_name, playlist_id })
+  });
+  const j = await r.json();
+  document.getElementById("plActiveStatus").innerHTML = r.ok ? `<span class="ok">OK publicado</span>` : `<span class="bad">${j.error||'Error'}</span>`;
+}
+
+async function pair(){
   const pairing_code = document.getElementById("pairCode").value.trim();
   const screen_name = document.getElementById("pairScreen").value;
   if (!pairing_code) return;
 
-  document.getElementById("pairStatus").innerHTML = "Vinculando...";
   const r = await fetch(`${API}/api/player/pair`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ pairing_code, screen_name })
   });
   const j = await r.json();
-  if (!r.ok) {
-    document.getElementById("pairStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
-    return;
-  }
-  document.getElementById("pairStatus").innerHTML = `<span class="ok">OK</span> asignado a ${j.screen_name}`;
-  await loadPlayers();
+  document.getElementById("pairStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
+  if (r.ok) await loadPlayers();
 }
 
-async function loadPlayers() {
+async function loadPlayers(){
   const players = await (await fetch(`${API}/api/players`)).json();
   const box = document.getElementById("players");
-  if (!players.length) { box.innerHTML = "<small>No hay players aún.</small>"; return; }
+  const t = Math.floor(Date.now()/1000);
 
-  const now = Math.floor(Date.now()/1000);
   box.innerHTML = "<ul>" + players.map(p => {
-    const age = p.last_seen ? (now - p.last_seen) : 999999;
-    const online = age < 60 ? "ONLINE" : "OFFLINE";
-    const cls = age < 60 ? "ok" : "bad";
-    return `<li>
-      <b>${p.name || "Player"}</b> — code: <b>${p.pairing_code}</b> — paired: ${p.paired ? "yes" : "no"} —
-      <span class="${cls}">${online}</span> <small>(last_seen ${age}s)</small>
-    </li>`;
+    const age = p.last_seen ? (t - p.last_seen) : 999999;
+    const online = age < 20 ? "ONLINE" : "OFFLINE";
+    const cls = age < 20 ? "ok" : "bad";
+    return `<li><b>${p.name||"Player"}</b> — code:${p.pairing_code} — screen:${p.screen_name||"-"} — <span class="${cls}">${online}</span> <small>(${age}s)</small></li>`;
   }).join("") + "</ul>";
+}
+
+async function syncPlay(scope){
+  document.getElementById("syncStatus").innerHTML = "Enviando SYNC…";
+  const r = await fetch(`${API}/api/sync/play`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ scope })
+  });
+  const j = await r.json();
+  document.getElementById("syncStatus").innerHTML = r.ok
+    ? `<span class="ok">OK</span> targets=${j.targets} startAt=${j.startAtMs}`
+    : `<span class="bad">${j.error||'Error'}</span>`;
 }
 </script>
 </body>

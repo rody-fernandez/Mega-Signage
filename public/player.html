@@ -3,44 +3,93 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mega Signage Player</title>
+  <title>Mega Signage Player V2</title>
   <style>
-    body { margin:0; background:#000; color:#fff; font-family: Arial, sans-serif; }
-    #wrap { padding: 18px; }
-    .code { font-size: 48px; letter-spacing: 6px; margin-top: 10px; }
-    .muted { color:#aaa; }
-    video { width:100vw; height:100vh; object-fit: contain; background:#000; }
+    body { margin:0; background:#000; color:#fff; font-family: Arial, sans-serif; overflow:hidden; }
+
+    /* Overlay de info / código */
+    #overlay {
+      position: fixed;
+      top: 0; left: 0;
+      padding: 12px;
+      background: rgba(0,0,0,.65);
+      z-index: 20;
+      min-width: 260px;
+    }
+
+    /* Stage pegado en 0,0 (arriba-izquierda) */
+    #stage {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: flex-start;     /* arriba */
+      justify-content: flex-start; /* izquierda */
+    }
+
+    /* Canvas donde “vive” el contenido capturable por Novastar */
+    #canvas {
+      position: relative;
+      background: #000;
+      overflow: hidden;
+      display: block;              /* no centrar */
+    }
+
+    /* Media anclado a 0,0 dentro del canvas */
+    video, img {
+      position: absolute;
+      top: 0; left: 0;            /* (0,0) */
+      width: 100%;
+      height: 100%;
+      display: none;
+      background: #000;
+    }
   </style>
 </head>
 <body>
-<div id="wrap">
-  <div id="status">Iniciando…</div>
-  <div class="muted" id="info"></div>
-  <div class="code" id="code"></div>
-</div>
 
-<video id="v" autoplay muted playsinline></video>
+<div id="overlay"></div>
+
+<div id="stage">
+  <div id="canvas">
+    <video id="v" autoplay muted playsinline></video>
+    <img id="img" />
+  </div>
+</div>
 
 <script>
 const API = location.origin;
-const STORAGE_KEY = "mega_signage_token";
-const NAME_KEY = "mega_signage_name";
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
-const elStatus = document.getElementById("status");
-const elInfo = document.getElementById("info");
-const elCode = document.getElementById("code");
-const video = document.getElementById("v");
-const wrap = document.getElementById("wrap");
+const overlay = document.getElementById("overlay");
+const canvas = document.getElementById("canvas");
+const v = document.getElementById("v");
+const img = document.getElementById("img");
 
-let token = localStorage.getItem(STORAGE_KEY);
-let lastPlaylistUpdatedAt = 0;
-let playlistItems = [];
-let idx = 0;
+const TOKEN_KEY = "mega_token";
+const NAME_KEY  = "mega_name";
+const PAIR_CODE_KEY = "mega_pair_code";
+
+let token = localStorage.getItem(TOKEN_KEY);
+let playlist = [];
+let cfg = null;
+let ws = null;
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function extOf(url){ const p=(url||"").toLowerCase().split("?")[0]; return p.includes(".") ? p.split(".").pop() : ""; }
+function isVideo(e){ return ["mp4","webm","ogg"].includes(e); }
+function isImage(e){ return ["png","jpg","jpeg","gif","webp"].includes(e); }
 
-async function registerIfNeeded() {
+function showOverlay(html){
+  overlay.style.display = "block";
+  overlay.innerHTML = html;
+}
+function hideOverlay(){
+  overlay.style.display = "none";
+}
+
+async function registerIfNeeded(){
   if (token) return;
+
   let name = localStorage.getItem(NAME_KEY);
   if (!name) {
     name = prompt("Nombre del player (ej: C10-BOX)", "C10-BOX") || "Player";
@@ -52,17 +101,26 @@ async function registerIfNeeded() {
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ name })
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "register failed");
-  token = j.token;
-  localStorage.setItem(STORAGE_KEY, token);
 
-  elStatus.textContent = "Vincular este dispositivo con el panel:";
-  elCode.textContent = j.pairing_code;
-  elInfo.textContent = "Abrí el panel admin y cargá el código para asignar a C10/C11/C12.";
+  const j = await r.json();
+
+  token = j.token;
+  localStorage.setItem(TOKEN_KEY, token);
+
+  // Guardar el código de vinculación para mostrarlo siempre que esté sin pair
+  localStorage.setItem(PAIR_CODE_KEY, j.pairing_code);
+
+  showOverlay(`
+    <div style="font-size:22px;font-weight:bold;">Player registrado</div>
+    <div style="margin-top:10px;">Código</div>
+    <div style="font-size:48px;font-weight:bold;color:#00ffcc;">
+      ${j.pairing_code}
+    </div>
+    <div style="margin-top:10px;font-size:14px;">Vincular desde el panel ADMIN</div>
+  `);
 }
 
-async function heartbeat() {
+async function heartbeat(){
   if (!token) return;
   await fetch(`${API}/api/player/heartbeat`, {
     method:"POST",
@@ -71,100 +129,162 @@ async function heartbeat() {
   }).catch(()=>{});
 }
 
-async function fetchConfig() {
+function applyCanvas(screen_cfg){
+  // Si width/height = 0, usar pantalla completa
+  const w = Number(screen_cfg?.width_px || 0);
+  const h = Number(screen_cfg?.height_px || 0);
+  const fit = screen_cfg?.fit || "contain";
+
+  if (w > 0 && h > 0) {
+    // Escala para que el canvas entre en el viewport, pero siempre pegado a 0,0
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const scale = Math.min(vw / w, vh / h);
+
+    canvas.style.width  = Math.floor(w * scale) + "px";
+    canvas.style.height = Math.floor(h * scale) + "px";
+  } else {
+    canvas.style.width = "100vw";
+    canvas.style.height = "100vh";
+  }
+
+  // Fit del contenido dentro del canvas
+  v.style.objectFit = fit;
+  img.style.objectFit = fit;
+}
+
+async function fetchConfig(){
   const r = await fetch(`${API}/api/player/config?token=${encodeURIComponent(token)}`);
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "config failed");
-  return j;
+  return await r.json();
 }
 
-function setUiPairing(pairingCodeShown=true){
-  wrap.style.display = pairingCodeShown ? "block" : "none";
-  video.style.display = pairingCodeShown ? "none" : "block";
+function connectWS(){
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type:"HELLO", token }));
+  };
+
+  ws.onmessage = async (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "SYNC_PLAY") {
+        const wait = Math.max(0, msg.startAtMs - Date.now());
+        showOverlay(`<b>SYNC PLAY…</b><br/>Arranca en ${Math.ceil(wait/1000)}s`);
+        await sleep(wait);
+        hideOverlay();
+        playLoop(true); // reinicia desde el inicio
+      }
+    } catch {}
+  };
+
+  ws.onclose = () => setTimeout(connectWS, 1000);
 }
 
-async function mainLoop() {
-  await registerIfNeeded();
+let playing = false;
+let forceRestart = false;
+
+async function playItem(url){
+  const e = extOf(url);
+
+  if (isVideo(e)) {
+    img.style.display = "none";
+    v.style.display = "block";
+    return new Promise((resolve) => {
+      v.onended = resolve;
+      v.onerror = resolve;
+      v.src = url + (url.includes("?")?"&":"?") + "ts=" + Date.now();
+      v.load();
+      v.play().catch(()=>{});
+      setTimeout(resolve, 180000); // safety 3 min
+    });
+  }
+
+  if (isImage(e)) {
+    v.style.display = "none";
+    img.style.display = "block";
+    return new Promise((resolve) => {
+      img.onerror = resolve;
+      img.onload = () => setTimeout(resolve, 8000); // 8s imagen
+      img.src = url + (url.includes("?")?"&":"?") + "ts=" + Date.now();
+    });
+  }
+
+  await sleep(400);
+}
+
+async function playLoop(restart=false){
+  forceRestart = restart;
+  if (playing) return;
+
+  playing = true;
 
   while (true) {
-    try {
-      await heartbeat();
+    if (forceRestart) { forceRestart = false; }
 
-      const cfg = await fetchConfig();
+    if (!cfg?.paired) {
+      const pairCode = localStorage.getItem(PAIR_CODE_KEY) || "----";
+      const pname = localStorage.getItem(NAME_KEY) || "Player";
 
-      if (!cfg.paired) {
-        // Not paired yet: show pairing code stored in DB by register endpoint
-        elStatus.textContent = "Pendiente de asignación en el panel…";
-        setUiPairing(true);
-        await sleep(3000);
-        continue;
-      }
+      showOverlay(`
+        <div style="font-size:22px;font-weight:bold;">Esperando vinculación</div>
+        <div style="margin-top:8px;font-size:14px;">${pname}</div>
+        <div style="margin-top:10px;">Código del Player</div>
+        <div style="font-size:52px;font-weight:bold;color:#00ffcc;margin-top:6px;">
+          ${pairCode}
+        </div>
+        <div style="margin-top:10px;font-size:14px;">Vincular desde el panel ADMIN</div>
+      `);
 
-      // Paired
-      elStatus.textContent = `Pantalla asignada: ${cfg.screen}`;
-      elInfo.textContent = cfg.playlist ? `${cfg.playlist.title}` : "Sin playlist publicada";
-      elCode.textContent = "";
-      setUiPairing(false);
-
-      const updatedAt = cfg.playlist?.updated_at || 0;
-
-      if (updatedAt !== lastPlaylistUpdatedAt) {
-        lastPlaylistUpdatedAt = updatedAt;
-        playlistItems = cfg.items || [];
-        idx = 0;
-      }
-
-      if (!playlistItems.length) {
-        // no content
-        setUiPairing(true);
-        elStatus.textContent = `Sin contenido para ${cfg.screen}. Publicá una playlist.`;
-        await sleep(3000);
-        continue;
-      }
-
-      // Play next
-      const item = playlistItems[idx % playlistItems.length];
-      idx++;
-
-      await playUrl(item.url);
-
-    } catch (e) {
-      // If server not reachable, just wait (LAN issue)
-      setUiPairing(true);
-      elStatus.textContent = "Sin conexión al servidor CMS (LAN). Reintentando…";
-      elInfo.textContent = "";
-      elCode.textContent = "";
-      await sleep(3000);
+      await sleep(1500);
+      continue;
     }
+
+    if (!playlist.length) {
+      showOverlay(`<b>${cfg.screen}</b><br/>Sin contenido. Activá/Publicá una playlist.`);
+      await sleep(1500);
+      continue;
+    }
+
+    hideOverlay();
+
+    for (let i=0; i<playlist.length; i++){
+      if (forceRestart) break;
+      await playItem(playlist[i].url);
+    }
+
+    if (forceRestart) continue;
   }
 }
 
-function playUrl(url) {
-  return new Promise((resolve) => {
-    // Force reload video
-    video.src = url + (url.includes("?") ? "&" : "?") + "ts=" + Date.now();
-    video.load();
+async function main(){
+  await registerIfNeeded();
+  connectWS();
 
-    // When ends -> next
-    video.onended = () => resolve();
+  while (true) {
+    await heartbeat();
 
-    // If error -> skip after short delay
-    video.onerror = async () => {
-      await sleep(1000);
-      resolve();
-    };
+    const j = await fetchConfig();
+    cfg = j;
 
-    // If playing stalls -> skip
-    let stallTimer = setTimeout(() => resolve(), 45000);
-    video.onplaying = () => clearTimeout(stallTimer);
-    video.oncanplay = () => {
-      // Make sure it starts
-      video.play().catch(()=>{});
-    };
-  });
+    if (!j.paired) {
+      // aquí playLoop ya muestra el código, no hace falta duplicar
+    } else {
+      applyCanvas(j.screen_cfg);
+      playlist = j.items || [];
+
+      // mini info de pantalla/playlist (1.5s) y se oculta
+      showOverlay(`<b>${j.screen}</b><br/>${j.playlist ? j.playlist.name : "Sin playlist activa"}`);
+      setTimeout(() => hideOverlay(), 1500);
+    }
+
+    await sleep(2000);
+  }
 }
 
-mainLoop();
+window.addEventListener("resize", () => cfg?.screen_cfg && applyCanvas(cfg.screen_cfg));
+main();
+playLoop(false);
 </script>
 </body>
 </html>
