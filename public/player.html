@@ -1,0 +1,170 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mega Signage Player</title>
+  <style>
+    body { margin:0; background:#000; color:#fff; font-family: Arial, sans-serif; }
+    #wrap { padding: 18px; }
+    .code { font-size: 48px; letter-spacing: 6px; margin-top: 10px; }
+    .muted { color:#aaa; }
+    video { width:100vw; height:100vh; object-fit: contain; background:#000; }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <div id="status">Iniciando…</div>
+  <div class="muted" id="info"></div>
+  <div class="code" id="code"></div>
+</div>
+
+<video id="v" autoplay muted playsinline></video>
+
+<script>
+const API = location.origin;
+const STORAGE_KEY = "mega_signage_token";
+const NAME_KEY = "mega_signage_name";
+
+const elStatus = document.getElementById("status");
+const elInfo = document.getElementById("info");
+const elCode = document.getElementById("code");
+const video = document.getElementById("v");
+const wrap = document.getElementById("wrap");
+
+let token = localStorage.getItem(STORAGE_KEY);
+let lastPlaylistUpdatedAt = 0;
+let playlistItems = [];
+let idx = 0;
+
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+async function registerIfNeeded() {
+  if (token) return;
+  let name = localStorage.getItem(NAME_KEY);
+  if (!name) {
+    name = prompt("Nombre del player (ej: C10-BOX)", "C10-BOX") || "Player";
+    localStorage.setItem(NAME_KEY, name);
+  }
+
+  const r = await fetch(`${API}/api/player/register`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ name })
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "register failed");
+  token = j.token;
+  localStorage.setItem(STORAGE_KEY, token);
+
+  elStatus.textContent = "Vincular este dispositivo con el panel:";
+  elCode.textContent = j.pairing_code;
+  elInfo.textContent = "Abrí el panel admin y cargá el código para asignar a C10/C11/C12.";
+}
+
+async function heartbeat() {
+  if (!token) return;
+  await fetch(`${API}/api/player/heartbeat`, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ token })
+  }).catch(()=>{});
+}
+
+async function fetchConfig() {
+  const r = await fetch(`${API}/api/player/config?token=${encodeURIComponent(token)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "config failed");
+  return j;
+}
+
+function setUiPairing(pairingCodeShown=true){
+  wrap.style.display = pairingCodeShown ? "block" : "none";
+  video.style.display = pairingCodeShown ? "none" : "block";
+}
+
+async function mainLoop() {
+  await registerIfNeeded();
+
+  while (true) {
+    try {
+      await heartbeat();
+
+      const cfg = await fetchConfig();
+
+      if (!cfg.paired) {
+        // Not paired yet: show pairing code stored in DB by register endpoint
+        elStatus.textContent = "Pendiente de asignación en el panel…";
+        setUiPairing(true);
+        await sleep(3000);
+        continue;
+      }
+
+      // Paired
+      elStatus.textContent = `Pantalla asignada: ${cfg.screen}`;
+      elInfo.textContent = cfg.playlist ? `${cfg.playlist.title}` : "Sin playlist publicada";
+      elCode.textContent = "";
+      setUiPairing(false);
+
+      const updatedAt = cfg.playlist?.updated_at || 0;
+
+      if (updatedAt !== lastPlaylistUpdatedAt) {
+        lastPlaylistUpdatedAt = updatedAt;
+        playlistItems = cfg.items || [];
+        idx = 0;
+      }
+
+      if (!playlistItems.length) {
+        // no content
+        setUiPairing(true);
+        elStatus.textContent = `Sin contenido para ${cfg.screen}. Publicá una playlist.`;
+        await sleep(3000);
+        continue;
+      }
+
+      // Play next
+      const item = playlistItems[idx % playlistItems.length];
+      idx++;
+
+      await playUrl(item.url);
+
+    } catch (e) {
+      // If server not reachable, just wait (LAN issue)
+      setUiPairing(true);
+      elStatus.textContent = "Sin conexión al servidor CMS (LAN). Reintentando…";
+      elInfo.textContent = "";
+      elCode.textContent = "";
+      await sleep(3000);
+    }
+  }
+}
+
+function playUrl(url) {
+  return new Promise((resolve) => {
+    // Force reload video
+    video.src = url + (url.includes("?") ? "&" : "?") + "ts=" + Date.now();
+    video.load();
+
+    // When ends -> next
+    video.onended = () => resolve();
+
+    // If error -> skip after short delay
+    video.onerror = async () => {
+      await sleep(1000);
+      resolve();
+    };
+
+    // If playing stalls -> skip
+    let stallTimer = setTimeout(() => resolve(), 45000);
+    video.onplaying = () => clearTimeout(stallTimer);
+    video.oncanplay = () => {
+      // Make sure it starts
+      video.play().catch(()=>{});
+    };
+  });
+}
+
+mainLoop();
+</script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mega Signage - Admin</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; width: 420px; }
+    input, select, button { padding: 8px; margin: 6px 0; width: 100%; }
+    small { color: #555; }
+    ul { padding-left: 18px; }
+    .ok { color: green; }
+    .bad { color: #b00; }
+  </style>
+</head>
+<body>
+  <h2>Mega Signage (MVP local)</h2>
+  <p><small>Subí videos, creá playlist por C10/C11/C12, y vinculá players por código.</small></p>
+
+  <div class="row">
+    <div class="card">
+      <h3>1) Subir video</h3>
+      <input type="file" id="file" accept="video/mp4,video/*" />
+      <button onclick="upload()">Subir</button>
+      <div id="uploadStatus"></div>
+    </div>
+
+    <div class="card">
+      <h3>2) Crear playlist</h3>
+      <label>Pantalla</label>
+      <select id="screen"></select>
+
+      <label>Título</label>
+      <input id="title" placeholder="Ej: Promo Semana" />
+
+      <label>Seleccionar videos (en orden)</label>
+      <div id="mediaList"></div>
+
+      <button onclick="publish()">Publicar playlist</button>
+      <div id="publishStatus"></div>
+    </div>
+
+    <div class="card">
+      <h3>3) Vincular Android Box</h3>
+      <small>En el Android abrís: <b>/public/player.html</b>. Va a mostrar un código.</small>
+      <label>Código de vinculación</label>
+      <input id="pairCode" placeholder="Ej: 482193" />
+      <label>Asignar a pantalla</label>
+      <select id="pairScreen"></select>
+      <button onclick="pair()">Vincular</button>
+      <div id="pairStatus"></div>
+    </div>
+
+    <div class="card">
+      <h3>4) Estado Players</h3>
+      <button onclick="loadPlayers()">Actualizar</button>
+      <div id="players"></div>
+    </div>
+  </div>
+
+<script>
+const API = location.origin;
+
+async function init() {
+  const screens = await (await fetch(`${API}/api/screens`)).json();
+  const sel = document.getElementById("screen");
+  const sel2 = document.getElementById("pairScreen");
+  sel.innerHTML = screens.map(s => `<option>${s.name}</option>`).join("");
+  sel2.innerHTML = screens.map(s => `<option>${s.name}</option>`).join("");
+  await loadMedia();
+  await loadPlayers();
+}
+window.onload = init;
+
+async function upload() {
+  const f = document.getElementById("file").files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  document.getElementById("uploadStatus").innerHTML = "Subiendo...";
+  const r = await fetch(`${API}/api/media/upload`, { method: "POST", body: fd });
+  const j = await r.json();
+  if (!r.ok) {
+    document.getElementById("uploadStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
+    return;
+  }
+  document.getElementById("uploadStatus").innerHTML = `<span class="ok">OK</span> (${j.filename})`;
+  await loadMedia();
+}
+
+async function loadMedia() {
+  const media = await (await fetch(`${API}/api/media`)).json();
+  const box = document.getElementById("mediaList");
+  box.innerHTML = "";
+  media.forEach(m => {
+    const id = `m_${m.id}`;
+    const div = document.createElement("div");
+    div.innerHTML = `
+      <label>
+        <input type="checkbox" id="${id}" data-mid="${m.id}">
+        ${m.original_name} <small>(${Math.round(m.size/1024/1024)} MB)</small>
+      </label>
+    `;
+    box.appendChild(div);
+  });
+}
+
+async function publish() {
+  const screen = document.getElementById("screen").value;
+  const title = document.getElementById("title").value || `Playlist ${screen}`;
+  const checks = Array.from(document.querySelectorAll("#mediaList input[type=checkbox]"))
+    .filter(c => c.checked)
+    .map(c => Number(c.dataset.mid));
+
+  if (checks.length === 0) {
+    document.getElementById("publishStatus").innerHTML = `<span class="bad">Seleccioná al menos 1 video</span>`;
+    return;
+  }
+
+  document.getElementById("publishStatus").innerHTML = "Publicando...";
+  const r = await fetch(`${API}/api/playlist/${encodeURIComponent(screen)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, media_ids: checks })
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    document.getElementById("publishStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
+    return;
+  }
+  document.getElementById("publishStatus").innerHTML = `<span class="ok">OK</span> playlist_id=${j.playlist_id}`;
+}
+
+async function pair() {
+  const pairing_code = document.getElementById("pairCode").value.trim();
+  const screen_name = document.getElementById("pairScreen").value;
+  if (!pairing_code) return;
+
+  document.getElementById("pairStatus").innerHTML = "Vinculando...";
+  const r = await fetch(`${API}/api/player/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pairing_code, screen_name })
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    document.getElementById("pairStatus").innerHTML = `<span class="bad">${j.error || "Error"}</span>`;
+    return;
+  }
+  document.getElementById("pairStatus").innerHTML = `<span class="ok">OK</span> asignado a ${j.screen_name}`;
+  await loadPlayers();
+}
+
+async function loadPlayers() {
+  const players = await (await fetch(`${API}/api/players`)).json();
+  const box = document.getElementById("players");
+  if (!players.length) { box.innerHTML = "<small>No hay players aún.</small>"; return; }
+
+  const now = Math.floor(Date.now()/1000);
+  box.innerHTML = "<ul>" + players.map(p => {
+    const age = p.last_seen ? (now - p.last_seen) : 999999;
+    const online = age < 60 ? "ONLINE" : "OFFLINE";
+    const cls = age < 60 ? "ok" : "bad";
+    return `<li>
+      <b>${p.name || "Player"}</b> — code: <b>${p.pairing_code}</b> — paired: ${p.paired ? "yes" : "no"} —
+      <span class="${cls}">${online}</span> <small>(last_seen ${age}s)</small>
+    </li>`;
+  }).join("") + "</ul>";
+}
+</script>
+</body>
+</html>
