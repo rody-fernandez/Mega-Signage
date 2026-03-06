@@ -1,392 +1,635 @@
 const express = require("express");
-const multer = require("multer");
 const cors = require("cors");
-const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const fs = require("fs");
-const http = require("http");
-const WebSocket = require("ws");
+const crypto = require("crypto");
+const multer = require("multer");
+const sqlite3 = require("sqlite3").verbose();
 
 const app = express();
 const PORT = 3000;
 
+// ===============================
+// MIDDLEWARES
+// ===============================
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// folders
-const UPLOAD_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+app.use((req, res, next) => {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] ${req.method} ${req.url}`);
+  next();
+});
 
-app.use("/public", express.static(path.join(__dirname, "public")));
-app.use("/media", express.static(UPLOAD_DIR));
+// ===============================
+// PATHS
+// ===============================
+const ROOT = __dirname;
+const PUBLIC_DIR = path.join(ROOT, "public");
+const UPLOAD_DIR = path.join(ROOT, "uploads");
+const DB_PATH = path.join(ROOT, "mega_signage.db");
 
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+app.use("/public", express.static(PUBLIC_DIR));
+app.use("/uploads", express.static(UPLOAD_DIR));
+
+app.get("/", (req, res) => {
+  res.redirect("/public/admin.html");
+});
+
+// ===============================
 // DB
-const db = new sqlite3.Database("signage.db");
+// ===============================
+const db = new sqlite3.Database(DB_PATH);
 
-function now() {
-  return Math.floor(Date.now() / 1000);
-}
-function randCode(len = 6) {
-  let out = "";
-  for (let i = 0; i < len; i++) out += Math.floor(Math.random() * 10);
-  return out;
-}
-function randToken() {
-  return "t_" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+function run(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err);
+      else resolve(this);
+    });
+  });
 }
 
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS screens (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE,
-      floor TEXT,          -- "P1" o "PB"
-      width_px INTEGER,
-      height_px INTEGER,
-      fit TEXT DEFAULT 'contain', -- contain/cover
-      orientation TEXT DEFAULT 'vertical', -- vertical/horizontal
-      active_playlist_id INTEGER
-    )
-  `);
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, function (err, row) {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
 
-  db.run(`
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, function (err, rows) {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+function makeToken() {
+  return "t_" + crypto.randomBytes(16).toString("hex");
+}
+
+function makePairCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function isOnline(lastSeen) {
+  if (!lastSeen) return false;
+  return nowMs() - lastSeen <= 15000;
+}
+
+async function initDb() {
+  // players
+  await run(`
     CREATE TABLE IF NOT EXISTS players (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      token TEXT UNIQUE,
-      pairing_code TEXT,
-      paired INTEGER DEFAULT 0,
-      screen_name TEXT,
+      name TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      pairing_code TEXT NOT NULL UNIQUE,
+      screen_id INTEGER,
+      paired_at INTEGER,
       last_seen INTEGER DEFAULT 0
     )
   `);
 
-  db.run(`
+  // screens
+  await run(`
+    CREATE TABLE IF NOT EXISTS screens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      floor TEXT DEFAULT '',
+      width_px INTEGER DEFAULT 0,
+      height_px INTEGER DEFAULT 0,
+      orientation TEXT DEFAULT 'vertical',
+      fit TEXT DEFAULT 'contain'
+    )
+  `);
+
+  // media
+  await run(`
     CREATE TABLE IF NOT EXISTS media (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      filename TEXT,
-      original_name TEXT,
-      size INTEGER,
-      created_at INTEGER
+      filename TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
     )
   `);
 
-  db.run(`
+  // playlists
+  await run(`
     CREATE TABLE IF NOT EXISTS playlists (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      screen_name TEXT,     -- a qué pantalla pertenece
-      media_ids TEXT,       -- JSON array
-      updated_at INTEGER
+      screen_name TEXT NOT NULL,
+      name TEXT NOT NULL,
+      media_ids TEXT NOT NULL,
+      active INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL
     )
   `);
 
-  // Seed screens: C1..C6 (P1) y C10..C12 (PB)
-  const seeds = [
-    { name: "C1", floor: "P1" },
-    { name: "C2", floor: "P1" },
-    { name: "C3", floor: "P1" },
-    { name: "C4", floor: "P1" },
-    { name: "C5", floor: "P1" },
-    { name: "C6", floor: "P1" },
-    { name: "C10", floor: "PB" },
-    { name: "C11", floor: "PB" },
-    { name: "C12", floor: "PB" }
+  // sembrar pantallas por defecto
+  const defaultScreens = [
+    ["C1", "P1", 128, 512],
+    ["C2", "P1", 192, 512],
+    ["C3", "P1", 256, 512],
+    ["C4", "P1", 128, 512],
+    ["C5", "P1", 128, 512],
+    ["C6", "P1", 320, 480],
+    ["C10", "PB", 704, 512],
+    ["C11", "PB", 192, 512],
+    ["C12", "PB", 256, 512]
   ];
 
-  // defaults de resolución: dejalo 0/0 y lo editás en panel
-  seeds.forEach(s => {
-    db.run(
-      `INSERT OR IGNORE INTO screens(name, floor, width_px, height_px) VALUES (?,?,0,0)`,
-      [s.name, s.floor]
+  for (const [name, floor, width_px, height_px] of defaultScreens) {
+    await run(
+      `
+      INSERT OR IGNORE INTO screens
+      (name, floor, width_px, height_px, orientation, fit)
+      VALUES (?, ?, ?, ?, 'vertical', 'contain')
+      `,
+      [name, floor, width_px, height_px]
     );
-  });
-});
-
-// Upload
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
-    cb(null, `${Date.now()}_${safe}`);
-  }
-});
-const upload = multer({ storage });
-
-// Home
-app.get("/", (req, res) => res.redirect("/public/admin.html"));
-
-// ---------- API: Screens ----------
-app.get("/api/screens", (req, res) => {
-  db.all(`SELECT * FROM screens ORDER BY floor, name`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
-});
-
-app.post("/api/screens/update", (req, res) => {
-  const { name, floor, width_px, height_px, fit, orientation } = req.body;
-  if (!name) return res.status(400).json({ error: "name required" });
-
-  db.run(
-    `UPDATE screens
-     SET floor = COALESCE(?, floor),
-         width_px = COALESCE(?, width_px),
-         height_px = COALESCE(?, height_px),
-         fit = COALESCE(?, fit),
-         orientation = COALESCE(?, orientation)
-     WHERE name = ?`,
-    [floor ?? null, width_px ?? null, height_px ?? null, fit ?? null, orientation ?? null, name],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true, changes: this.changes });
-    }
-  );
-});
-
-// ---------- API: Media ----------
-app.post("/api/media/upload", upload.single("file"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file" });
-  db.run(
-    `INSERT INTO media(filename, original_name, size, created_at) VALUES (?,?,?,?)`,
-    [req.file.filename, req.file.originalname, req.file.size, now()],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true, id: this.lastID });
-    }
-  );
-});
-
-app.get("/api/media", (req, res) => {
-  db.all(`SELECT * FROM media ORDER BY created_at DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows.map(r => ({ ...r, url: `/media/${r.filename}` })));
-  });
-});
-
-// ---------- API: Playlists ----------
-app.post("/api/playlists/create", (req, res) => {
-  const { name, screen_name, media_ids } = req.body;
-  if (!name || !screen_name || !Array.isArray(media_ids) || media_ids.length === 0) {
-    return res.status(400).json({ error: "name, screen_name, media_ids[] required" });
   }
 
-  db.run(
-    `INSERT INTO playlists(name, screen_name, media_ids, updated_at) VALUES (?,?,?,?)`,
-    [name, screen_name, JSON.stringify(media_ids), now()],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true, playlist_id: this.lastID });
-    }
-  );
-});
-
-app.get("/api/playlists/:screen", (req, res) => {
-  const screen = req.params.screen;
-  db.all(
-    `SELECT * FROM playlists WHERE screen_name=? ORDER BY updated_at DESC`,
-    [screen],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows.map(r => ({ ...r, media_ids: JSON.parse(r.media_ids || "[]") })));
-    }
-  );
-});
-
-app.post("/api/playlists/activate", (req, res) => {
-  const { screen_name, playlist_id } = req.body;
-  if (!screen_name || !playlist_id) return res.status(400).json({ error: "screen_name and playlist_id required" });
-
-  db.run(
-    `UPDATE screens SET active_playlist_id=? WHERE name=?`,
-    [playlist_id, screen_name],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true });
-    }
-  );
-});
-
-// ---------- API: Players ----------
-app.get("/api/players", (req, res) => {
-  db.all(
-    `SELECT id, name, token, pairing_code, paired, screen_name, last_seen FROM players ORDER BY id DESC`,
-    [],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
-});
-
-app.post("/api/player/register", (req, res) => {
-  const pairing_code = randCode(6);
-  const token = randToken();
-  const name = req.body?.name || "Player";
-
-  db.run(
-    `INSERT INTO players(name, token, pairing_code, paired, last_seen) VALUES (?,?,?,?,?)`,
-    [name, token, pairing_code, 0, now()],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true, token, pairing_code });
-    }
-  );
-});
-
-app.post("/api/player/pair", (req, res) => {
-  const { pairing_code, screen_name } = req.body;
-  if (!pairing_code || !screen_name) return res.status(400).json({ error: "pairing_code and screen_name required" });
-
-  db.run(
-    `UPDATE players SET paired=1, screen_name=? WHERE pairing_code=?`,
-    [screen_name, pairing_code],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0) return res.status(404).json({ error: "pairing_code not found" });
-      res.json({ ok: true });
-    }
-  );
-});
-
-app.post("/api/player/heartbeat", (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: "token required" });
-
-  db.run(`UPDATE players SET last_seen=? WHERE token=?`, [now(), token], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ ok: true });
-  });
-});
-
-app.get("/api/player/config", (req, res) => {
-  const token = req.query.token;
-  if (!token) return res.status(400).json({ error: "token required" });
-
-  db.get(
-    `SELECT paired, screen_name FROM players WHERE token=?`,
-    [token],
-    (err, p) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!p) return res.status(404).json({ error: "token not found" });
-      if (!p.paired || !p.screen_name) return res.json({ paired: false });
-
-      db.get(`SELECT * FROM screens WHERE name=?`, [p.screen_name], (err2, s) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-        if (!s) return res.json({ paired: false });
-
-        if (!s.active_playlist_id) {
-          return res.json({
-            paired: true,
-            screen: s.name,
-            screen_cfg: {
-              width_px: s.width_px, height_px: s.height_px,
-              fit: s.fit, orientation: s.orientation
-            },
-            playlist: null,
-            items: []
-          });
-        }
-
-        db.get(`SELECT * FROM playlists WHERE id=?`, [s.active_playlist_id], (err3, pl) => {
-          if (err3) return res.status(500).json({ error: err3.message });
-          if (!pl) return res.json({ paired: true, screen: s.name, playlist: null, items: [] });
-
-          const mids = JSON.parse(pl.media_ids || "[]");
-          if (!mids.length) return res.json({ paired: true, screen: s.name, playlist: null, items: [] });
-
-          const placeholders = mids.map(() => "?").join(",");
-          db.all(
-            `SELECT id, filename, original_name FROM media WHERE id IN (${placeholders})`,
-            mids,
-            (err4, rows) => {
-              if (err4) return res.status(500).json({ error: err4.message });
-              // mantener orden según mids
-              const map = new Map(rows.map(r => [r.id, r]));
-              const items = mids.map(id => map.get(id)).filter(Boolean).map(r => ({
-                id: r.id,
-                name: r.original_name,
-                url: `/media/${r.filename}`
-              }));
-
-              res.json({
-                paired: true,
-                screen: s.name,
-                screen_cfg: {
-                  width_px: s.width_px, height_px: s.height_px,
-                  fit: s.fit, orientation: s.orientation
-                },
-                playlist: { id: pl.id, name: pl.name, updated_at: pl.updated_at },
-                items
-              });
-            }
-          );
-        });
-      });
-    }
-  );
-});
-
-// ---------- Sync Play ----------
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
-
-// token -> ws
-const wsClients = new Map();
-
-wss.on("connection", (ws) => {
-  ws.on("message", (buf) => {
-    try {
-      const msg = JSON.parse(buf.toString());
-      if (msg.type === "HELLO" && msg.token) {
-        wsClients.set(msg.token, ws);
-        ws.send(JSON.stringify({ type: "HELLO_OK" }));
-      }
-    } catch {}
-  });
-
-  ws.on("close", () => {
-    for (const [k, v] of wsClients.entries()) {
-      if (v === ws) wsClients.delete(k);
-    }
-  });
-});
-
-function broadcastToTokens(tokens, payload) {
-  for (const t of tokens) {
-    const ws = wsClients.get(t);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    }
-  }
+  console.log("DB OK:", DB_PATH);
 }
 
-app.post("/api/sync/play", (req, res) => {
-  // body: { scope: "ALL" | "P1" | "PB" }
-  const scope = (req.body?.scope || "ALL").toUpperCase();
-  const startAtMs = Date.now() + 1500; // 1.5s para que todos preparen
-
-  // seleccionar players del scope
-  const sql = `
-    SELECT p.token
-    FROM players p
-    JOIN screens s ON s.name = p.screen_name
-    WHERE p.paired=1
-      AND (? = 'ALL' OR s.floor = ?)
-  `;
-
-  db.all(sql, [scope, scope], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-
-    const tokens = rows.map(r => r.token);
-    broadcastToTokens(tokens, { type: "SYNC_PLAY", startAtMs });
-
-    res.json({ ok: true, scope, startAtMs, targets: tokens.length });
-  });
+initDb().catch((e) => {
+  console.error("DB init error:", e);
 });
 
-server.listen(PORT, "0.0.0.0", () => {
+// ===============================
+// UPLOADS
+// ===============================
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, UPLOAD_DIR);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname || "");
+    const fname = `${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
+    cb(null, fname);
+  }
+});
+
+const upload = multer({ storage });
+
+// ===============================
+// API - PLAYER
+// ===============================
+
+// register
+app.post("/api/player/register", async (req, res) => {
+  try {
+    const name = String(req.body?.name || "ANDROID-BOX").trim();
+    const token = makeToken();
+    const pairing_code = makePairCode();
+
+    await run(
+      `
+      INSERT INTO players (name, token, pairing_code, last_seen)
+      VALUES (?, ?, ?, ?)
+      `,
+      [name, token, pairing_code, nowMs()]
+    );
+
+    return res.json({
+      ok: true,
+      token,
+      pairing_code
+    });
+  } catch (e) {
+    console.error("register error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// ping
+app.post("/api/player/ping", async (req, res) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, error: "missing token" });
+    }
+
+    const r = await run(
+      `UPDATE players SET last_seen = ? WHERE token = ?`,
+      [nowMs(), token]
+    );
+
+    if (!r.changes) {
+      return res.status(404).json({ ok: false, error: "unknown token" });
+    }
+
+    return res.json({ ok: true, ts: nowMs() });
+  } catch (e) {
+    console.error("ping error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// compat heartbeat (player web viejo)
+app.post("/api/player/heartbeat", async (req, res) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, error: "missing token" });
+    }
+
+    const r = await run(
+      `UPDATE players SET last_seen = ? WHERE token = ?`,
+      [nowMs(), token]
+    );
+
+    if (!r.changes) {
+      return res.status(404).json({ ok: false, error: "unknown token" });
+    }
+
+    return res.json({ ok: true, ts: nowMs() });
+  } catch (e) {
+    console.error("heartbeat error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// config para player web y app
+app.get("/api/player/config", async (req, res) => {
+  try {
+    const token = String(req.query?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, error: "missing token" });
+    }
+
+    const p = await get(`SELECT * FROM players WHERE token = ?`, [token]);
+    if (!p) {
+      return res.status(404).json({ ok: false, error: "unknown token" });
+    }
+
+    // actualizar last_seen al consultar config
+    await run(`UPDATE players SET last_seen = ? WHERE token = ?`, [nowMs(), token]);
+
+    if (!p.screen_id) {
+      return res.json({
+        ok: true,
+        paired: false,
+        pairing_code: p.pairing_code
+      });
+    }
+
+    const screen = await get(`SELECT * FROM screens WHERE id = ?`, [p.screen_id]);
+    if (!screen) {
+      return res.json({
+        ok: true,
+        paired: false,
+        pairing_code: p.pairing_code
+      });
+    }
+
+    const activePlaylist = await get(
+      `SELECT * FROM playlists WHERE screen_name = ? AND active = 1 ORDER BY id DESC LIMIT 1`,
+      [screen.name]
+    );
+
+    let items = [];
+    let playlistName = null;
+
+    if (activePlaylist) {
+      playlistName = activePlaylist.name;
+      const mediaIds = JSON.parse(activePlaylist.media_ids || "[]");
+
+      if (Array.isArray(mediaIds) && mediaIds.length > 0) {
+        const placeholders = mediaIds.map(() => "?").join(",");
+        const mediaRows = await all(
+          `SELECT * FROM media WHERE id IN (${placeholders})`,
+          mediaIds
+        );
+
+        // conservar orden
+        const mediaMap = {};
+        for (const m of mediaRows) mediaMap[m.id] = m;
+
+        items = mediaIds
+          .map((id) => mediaMap[id])
+          .filter(Boolean)
+          .map((m) => ({
+            id: m.id,
+            name: m.original_name,
+            url: `/uploads/${m.filename}`
+          }));
+      }
+    }
+
+    return res.json({
+      ok: true,
+      paired: true,
+      screen: screen.name,
+      screen_cfg: {
+        width_px: screen.width_px,
+        height_px: screen.height_px,
+        fit: screen.fit,
+        orientation: screen.orientation
+      },
+      playlist: playlistName
+        ? {
+            name: playlistName
+          }
+        : null,
+      items
+    });
+  } catch (e) {
+    console.error("player config error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// pair compat
+app.post("/api/player/pair", async (req, res) => {
+  try {
+    const pairing_code = String(req.body?.pairing_code || "").trim();
+    const screen_name = String(req.body?.screen || "").trim();
+
+    if (!pairing_code) {
+      return res.status(400).json({ ok: false, error: "missing pairing_code" });
+    }
+    if (!screen_name) {
+      return res.status(400).json({ ok: false, error: "missing screen" });
+    }
+
+    const screen = await get(`SELECT id FROM screens WHERE name = ?`, [screen_name]);
+    if (!screen) {
+      return res.status(404).json({ ok: false, error: "screen not found" });
+    }
+
+    const r = await run(
+      `UPDATE players SET screen_id = ?, paired_at = ? WHERE pairing_code = ?`,
+      [screen.id, nowMs(), pairing_code]
+    );
+
+    if (!r.changes) {
+      return res.status(404).json({ ok: false, error: "pairing_code not found" });
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("pair error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// ===============================
+// API - SCREENS
+// ===============================
+app.get("/api/screens", async (req, res) => {
+  try {
+    const rows = await all(`SELECT * FROM screens ORDER BY name ASC`);
+    return res.json(rows);
+  } catch (e) {
+    console.error("screens error:", e);
+    return res.status(500).json([]);
+  }
+});
+
+app.post("/api/screens/update", async (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+    const floor = String(req.body?.floor || "").trim();
+    const width_px = Number(req.body?.width_px || 0);
+    const height_px = Number(req.body?.height_px || 0);
+    const orientation = String(req.body?.orientation || "vertical").trim();
+    const fit = String(req.body?.fit || "contain").trim();
+
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "missing name" });
+    }
+
+    const r = await run(
+      `
+      UPDATE screens
+      SET floor = ?, width_px = ?, height_px = ?, orientation = ?, fit = ?
+      WHERE name = ?
+      `,
+      [floor, width_px, height_px, orientation, fit, name]
+    );
+
+    if (!r.changes) {
+      return res.status(404).json({ ok: false, error: "screen not found" });
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("screens update error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// ===============================
+// API - MEDIA
+// ===============================
+app.post("/api/media/upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "missing file" });
+    }
+
+    await run(
+      `
+      INSERT INTO media (filename, original_name, mime, size, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      [
+        req.file.filename,
+        req.file.originalname,
+        req.file.mimetype || "application/octet-stream",
+        req.file.size || 0,
+        nowMs()
+      ]
+    );
+
+    return res.json({ ok: true, filename: req.file.filename });
+  } catch (e) {
+    console.error("upload error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/api/media", async (req, res) => {
+  try {
+    const rows = await all(`SELECT * FROM media ORDER BY id DESC`);
+    const media = rows.map((m) => ({
+      id: m.id,
+      filename: m.filename,
+      original_name: m.original_name,
+      size: m.size || 0,
+      url: `/uploads/${m.filename}`
+    }));
+    return res.json(media);
+  } catch (e) {
+    console.error("media error:", e);
+    return res.status(500).json([]);
+  }
+});
+
+// ===============================
+// API - PLAYLISTS
+// ===============================
+app.post("/api/playlists/create", async (req, res) => {
+  try {
+    const screen_name = String(req.body?.screen_name || "").trim();
+    const name = String(req.body?.name || "").trim();
+    const media_ids = Array.isArray(req.body?.media_ids) ? req.body.media_ids : [];
+
+    if (!screen_name) {
+      return res.status(400).json({ ok: false, error: "missing screen_name" });
+    }
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "missing name" });
+    }
+
+    await run(
+      `
+      INSERT INTO playlists (screen_name, name, media_ids, active, created_at)
+      VALUES (?, ?, ?, 0, ?)
+      `,
+      [screen_name, name, JSON.stringify(media_ids), nowMs()]
+    );
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("playlist create error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.get("/api/playlists/:screen", async (req, res) => {
+  try {
+    const screen = String(req.params.screen || "").trim();
+
+    const rows = await all(
+      `SELECT * FROM playlists WHERE screen_name = ? ORDER BY id DESC`,
+      [screen]
+    );
+
+    const playlists = rows.map((p) => ({
+      id: p.id,
+      name: p.name,
+      screen_name: p.screen_name,
+      media_ids: JSON.parse(p.media_ids || "[]"),
+      active: p.active
+    }));
+
+    return res.json(playlists);
+  } catch (e) {
+    console.error("playlists list error:", e);
+    return res.status(500).json([]);
+  }
+});
+
+app.post("/api/playlists/activate", async (req, res) => {
+  try {
+    const screen_name = String(req.body?.screen_name || "").trim();
+    const playlist_id = Number(req.body?.playlist_id || 0);
+
+    if (!screen_name || !playlist_id) {
+      return res.status(400).json({ ok: false, error: "missing data" });
+    }
+
+    await run(`UPDATE playlists SET active = 0 WHERE screen_name = ?`, [screen_name]);
+    await run(`UPDATE playlists SET active = 1 WHERE id = ?`, [playlist_id]);
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("playlist activate error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// ===============================
+// API - PLAYERS LIST
+// ===============================
+app.get("/api/players", async (req, res) => {
+  try {
+    const rows = await all(
+      `
+      SELECT p.id, p.name, p.token, p.pairing_code, p.screen_id, p.paired_at, p.last_seen,
+             s.name as screen_name
+      FROM players p
+      LEFT JOIN screens s ON s.id = p.screen_id
+      ORDER BY p.id DESC
+      `
+    );
+
+    const players = rows.map((p) => ({
+      name: p.name,
+      pairing_code: p.pairing_code,
+      screen_name: p.screen_name || "-",
+      online: isOnline(p.last_seen),
+      offline_seconds: p.last_seen ? Math.floor((nowMs() - p.last_seen) / 1000) : 99999
+    }));
+
+    return res.json(players);
+  } catch (e) {
+    console.error("players list error:", e);
+    return res.status(500).json([]);
+  }
+});
+
+// ===============================
+// API - SYNC PLAY (básico)
+// ===============================
+app.post("/api/sync/play", async (req, res) => {
+  try {
+    const scope = String(req.body?.scope || "ALL").trim();
+    let targets = 0;
+
+    if (scope === "P1") {
+      const rows = await all(
+        `SELECT COUNT(*) as c
+         FROM players p
+         LEFT JOIN screens s ON s.id = p.screen_id
+         WHERE s.floor = 'P1'`
+      );
+      targets = rows[0]?.c || 0;
+    } else if (scope === "PB") {
+      const rows = await all(
+        `SELECT COUNT(*) as c
+         FROM players p
+         LEFT JOIN screens s ON s.id = p.screen_id
+         WHERE s.floor = 'PB'`
+      );
+      targets = rows[0]?.c || 0;
+    } else {
+      const rows = await all(`SELECT COUNT(*) as c FROM players`);
+      targets = rows[0]?.c || 0;
+    }
+
+    return res.json({
+      ok: true,
+      scope,
+      targets,
+      startAt: nowMs() + 3000
+    });
+  } catch (e) {
+    console.error("sync play error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+// ===============================
+// START
+// ===============================
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Mega Signage V2: http://0.0.0.0:${PORT}/public/admin.html`);
   console.log(`Player: http://<IP>:${PORT}/public/player.html`);
 });
