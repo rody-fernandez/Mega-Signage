@@ -1,294 +1,283 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Mega Signage - Admin V2</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { display:flex; gap:16px; flex-wrap: wrap; align-items:flex-start; }
-    .card { border:1px solid #ddd; border-radius:12px; padding:12px; width: 420px; }
-    input, select, button { padding:8px; margin:6px 0; width:100%; }
-    small { color:#555; }
-    .ok{ color:green; } .bad{ color:#b00; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-  </style>
+  <meta charset="UTF-8" />
+  <title>Mega Signage Admin V3</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="/public/css/admin.css" />
 </head>
 <body>
-  <h2>Mega Signage (V2 local)</h2>
-  <p><small>Playlists con nombre + resolución por pantalla + Sync Play.</small></p>
-
-  <div class="row">
-    <div class="card">
-      <h3>1) Subir medio (mp4/png/jpg)</h3>
-      <input type="file" id="file" />
-      <button onclick="upload()">Subir</button>
-      <div id="uploadStatus"></div>
-    </div>
-
-    <div class="card">
-      <h3>2) Pantallas y resolución</h3>
-      <select id="screenSelect"></select>
-
-      <div class="grid">
-        <div>
-          <label><small>Floor</small></label>
-          <select id="floor">
-            <option value="P1">P1</option>
-            <option value="PB">PB</option>
-          </select>
-        </div>
-        <div>
-          <label><small>Orientación</small></label>
-          <select id="orientation">
-            <option value="vertical">vertical</option>
-            <option value="horizontal">horizontal</option>
-          </select>
-        </div>
-        <div>
-          <label><small>Width px</small></label>
-          <input id="wpx" type="number" min="0" />
-        </div>
-        <div>
-          <label><small>Height px</small></label>
-          <input id="hpx" type="number" min="0" />
-        </div>
-      </div>
-
-      <label><small>Fit</small></label>
-      <select id="fit">
-        <option value="contain">contain (recomendado)</option>
-        <option value="cover">cover</option>
-      </select>
-
-      <button onclick="saveScreen()">Guardar pantalla</button>
-      <div id="screenStatus"></div>
-    </div>
-
-    <div class="card">
-      <h3>3) Playlists con nombre</h3>
-      <label><small>Pantalla</small></label>
-      <select id="plScreen"></select>
-
-      <label><small>Nombre playlist</small></label>
-      <input id="plName" placeholder="Ej: Columna 1 / Promo PB" />
-
-      <label><small>Seleccionar medios (orden manual: marcá en orden)</small></label>
-      <div id="mediaList"></div>
-
-      <button onclick="createPlaylist()">Crear playlist</button>
-      <div id="plStatus"></div>
-
-      <hr/>
-      <label><small>Playlists existentes (de la pantalla)</small></label>
-      <select id="plExisting"></select>
-      <button onclick="activatePlaylist()">Activar (Publicar)</button>
-      <div id="plActiveStatus"></div>
-    </div>
-
-    <div class="card">
-      <h3>4) Vincular Android Box</h3>
-      <small>En Android: <b>/public/player.html</b> → te muestra código.</small>
-      <label>Código</label>
-      <input id="pairCode" placeholder="Ej: 631496" />
-      <label>Pantalla</label>
-      <select id="pairScreen"></select>
-      <button onclick="pair()">Vincular</button>
-      <div id="pairStatus"></div>
-    </div>
-
-    <div class="card">
-      <h3>5) Sync Play</h3>
-      <button onclick="syncPlay('ALL')">SYNC ALL</button>
-      <button onclick="syncPlay('P1')">SYNC PISO 1</button>
-      <button onclick="syncPlay('PB')">SYNC PLANTA BAJA</button>
-      <div id="syncStatus"></div>
-
-      <hr/>
-      <h3>Estado Players</h3>
-      <button onclick="loadPlayers()">Actualizar</button>
-      <div id="players"></div>
+  <div class="topbar">
+    <div class="title">Mega Signage Admin V3</div>
+    <div class="tabs">
+      <button class="tab active" data-panel="pantallas">Pantallas</button>
+      <button class="tab" data-panel="layout">Editor Layout</button>
+      <button class="tab" data-panel="playlists">Playlists</button>
+      <button class="tab" data-panel="media">Medios</button>
+      <button class="tab" data-panel="players">Players</button>
+      <button class="tab" data-panel="sync">Sync</button>
     </div>
   </div>
 
-<script>
-const API = location.origin;
+  <div class="wrap">
+    <section id="panel-pantallas" class="panel active">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Agregar / editar pantalla</h3>
+          <div class="row">
+            <div>
+              <label>Nombre pantalla</label>
+              <input id="scr_name" placeholder="Ej: P1-C7" />
+            </div>
+            <div>
+              <label>Floor</label>
+              <input id="scr_floor" placeholder="Ej: P1 o PB" />
+            </div>
+          </div>
+          <div class="row-4">
+            <div>
+              <label>X</label>
+              <input id="scr_x" type="number" value="0" />
+            </div>
+            <div>
+              <label>Y</label>
+              <input id="scr_y" type="number" value="0" />
+            </div>
+            <div>
+              <label>Width</label>
+              <input id="scr_w" type="number" value="128" />
+            </div>
+            <div>
+              <label>Height</label>
+              <input id="scr_h" type="number" value="512" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Orientación</label>
+              <select id="scr_orientation">
+                <option value="vertical">vertical</option>
+                <option value="horizontal">horizontal</option>
+              </select>
+            </div>
+            <div>
+              <label>Fit</label>
+              <select id="scr_fit">
+                <option value="contain">contain</option>
+                <option value="cover">cover</option>
+                <option value="stretch">stretch</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <button id="btn_create_screen" class="btn-primary">Agregar pantalla</button>
+            <button id="btn_update_screen">Actualizar pantalla seleccionada</button>
+          </div>
+          <div class="row">
+            <button id="btn_delete_screen">Eliminar pantalla seleccionada</button>
+            <button id="btn_refresh_screens">Recargar pantallas</button>
+          </div>
+          <div id="screen_status" class="status"></div>
+        </div>
 
-let screensCache = [];
+        <div class="card">
+          <h3>Lista de pantallas</h3>
+          <div class="list" id="screens_list"></div>
+        </div>
+      </div>
+    </section>
 
-async function init(){
-  await loadScreens();
-  await loadMedia();
-  await loadPlayers();
-}
-window.onload = init;
+    <section id="panel-layout" class="panel">
+      <div class="layout-wrap">
+        <div class="canvas-box">
+          <h3>Editor de layout</h3>
+          <div class="canvas-toolbar">
+            <input id="layout_x" type="number" placeholder="X" />
+            <input id="layout_y" type="number" placeholder="Y" />
+            <input id="layout_w" type="number" placeholder="Width" />
+            <input id="layout_h" type="number" placeholder="Height" />
+            <button id="btn_apply_layout_to_selected">Aplicar a seleccionada</button>
+            <button id="btn_save_layout" class="btn-ok">Guardar layout</button>
+          </div>
+          <div id="layout_canvas" class="layout-canvas"></div>
+          <div id="layout_status" class="status"></div>
+        </div>
 
-async function upload(){
-  const f = document.getElementById("file").files[0];
-  if (!f) return;
-  const fd = new FormData();
-  fd.append("file", f);
-  document.getElementById("uploadStatus").innerHTML = "Subiendo...";
-  const r = await fetch(`${API}/api/media/upload`, { method:"POST", body: fd });
-  const j = await r.json();
-  document.getElementById("uploadStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
-  if (r.ok) await loadMedia();
-}
+        <div class="card">
+          <h3>Detalle de pantalla</h3>
+          <div class="row">
+            <div>
+              <label>Seleccionada</label>
+              <input id="layout_selected_name" readonly />
+            </div>
+            <div>
+              <label>Floor</label>
+              <input id="layout_selected_floor" />
+            </div>
+          </div>
+          <div class="row-4">
+            <div>
+              <label>X</label>
+              <input id="layout_selected_x" type="number" />
+            </div>
+            <div>
+              <label>Y</label>
+              <input id="layout_selected_y" type="number" />
+            </div>
+            <div>
+              <label>Width</label>
+              <input id="layout_selected_w" type="number" />
+            </div>
+            <div>
+              <label>Height</label>
+              <input id="layout_selected_h" type="number" />
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Orientación</label>
+              <select id="layout_selected_orientation">
+                <option value="vertical">vertical</option>
+                <option value="horizontal">horizontal</option>
+              </select>
+            </div>
+            <div>
+              <label>Fit</label>
+              <select id="layout_selected_fit">
+                <option value="contain">contain</option>
+                <option value="cover">cover</option>
+                <option value="stretch">stretch</option>
+              </select>
+            </div>
+          </div>
+          <button id="btn_apply_detail_to_selected">Actualizar bloque seleccionado</button>
+          <p class="small">En esta fase el editor guarda X/Y/Width/Height. El crop real se hace en la APK.</p>
+        </div>
+      </div>
+    </section>
 
-async function loadMedia(){
-  const media = await (await fetch(`${API}/api/media`)).json();
-  const box = document.getElementById("mediaList");
-  box.innerHTML = "";
-  media.forEach(m => {
-    const div = document.createElement("div");
-    div.innerHTML = `
-      <label>
-        <input type="checkbox" data-mid="${m.id}">
-        ${m.original_name} <small>(${Math.round(m.size/1024/1024)} MB)</small>
-      </label>
-    `;
-    box.appendChild(div);
-  });
-}
+    <section id="panel-playlists" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Crear playlist</h3>
+          <div class="row">
+            <div>
+              <label>Pantalla</label>
+              <select id="pl_screen"></select>
+            </div>
+            <div>
+              <label>Nombre playlist</label>
+              <input id="pl_name" placeholder="Ej: Promo P1-C1" />
+            </div>
+          </div>
+          <div>
+            <label>Seleccionar medios</label>
+            <div id="pl_media_list" class="media-checks"></div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btn_create_playlist" class="btn-primary">Crear playlist</button>
+            <button id="btn_reload_playlists">Recargar playlists</button>
+          </div>
+          <div id="playlist_status" class="status"></div>
+        </div>
 
-async function loadScreens(){
-  const screens = await (await fetch(`${API}/api/screens`)).json();
-  screensCache = screens;
+        <div class="card">
+          <h3>Activar playlist</h3>
+          <div class="row">
+            <div>
+              <label>Pantalla</label>
+              <select id="pl_activate_screen"></select>
+            </div>
+            <div>
+              <label>Playlists disponibles</label>
+              <select id="pl_activate_list"></select>
+            </div>
+          </div>
+          <button id="btn_activate_playlist" class="btn-ok">Activar playlist</button>
+          <div id="activate_status" class="status"></div>
+        </div>
+      </div>
 
-  const sel = document.getElementById("screenSelect");
-  const plScreen = document.getElementById("plScreen");
-  const pairScreen = document.getElementById("pairScreen");
+      <div class="card">
+        <h3>Lista de playlists</h3>
+        <div class="list playlist-list" id="playlists_list"></div>
+      </div>
+    </section>
 
-  const options = screens.map(s => `<option value="${s.name}">${s.floor}-${s.name}</option>`).join("");
-  sel.innerHTML = options;
-  plScreen.innerHTML = options;
-  pairScreen.innerHTML = options;
+    <section id="panel-media" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Subir medio</h3>
+          <input type="file" id="media_file" />
+          <div style="margin-top:10px">
+            <button id="btn_upload_media" class="btn-primary">Subir archivo</button>
+          </div>
+          <div id="media_status" class="status"></div>
+        </div>
 
-  sel.onchange = fillScreenForm;
-  plScreen.onchange = loadPlaylistsForScreen;
+        <div class="card">
+          <h3>Activos de medios</h3>
+          <div class="list" id="media_list"></div>
+        </div>
+      </div>
+    </section>
 
-  fillScreenForm();
-  await loadPlaylistsForScreen();
-}
+    <section id="panel-players" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Vincular Android Box</h3>
+          <div class="row">
+            <div>
+              <label>Código</label>
+              <input id="pair_code" placeholder="Código de la app" />
+            </div>
+            <div>
+              <label>Pantalla</label>
+              <select id="pair_screen"></select>
+            </div>
+          </div>
+          <button id="btn_pair" class="btn-primary">Vincular</button>
+          <div id="pair_status" class="status"></div>
+        </div>
 
-function fillScreenForm(){
-  const name = document.getElementById("screenSelect").value;
-  const s = screensCache.find(x => x.name === name);
-  if (!s) return;
-  document.getElementById("floor").value = s.floor || "P1";
-  document.getElementById("orientation").value = s.orientation || "vertical";
-  document.getElementById("wpx").value = s.width_px || 0;
-  document.getElementById("hpx").value = s.height_px || 0;
-  document.getElementById("fit").value = s.fit || "contain";
-}
+        <div class="card">
+          <h3>Estado players</h3>
+          <button id="btn_reload_players">Actualizar players</button>
+          <div style="margin-top:10px" class="list players-list" id="players_list"></div>
+        </div>
+      </div>
+    </section>
 
-async function saveScreen(){
-  const name = document.getElementById("screenSelect").value;
-  const payload = {
-    name,
-    floor: document.getElementById("floor").value,
-    orientation: document.getElementById("orientation").value,
-    width_px: Number(document.getElementById("wpx").value || 0),
-    height_px: Number(document.getElementById("hpx").value || 0),
-    fit: document.getElementById("fit").value
-  };
+    <section id="panel-sync" class="panel">
+      <div class="grid-3">
+        <div class="card">
+          <h3>SYNC ALL</h3>
+          <button id="btn_sync_all" class="btn-primary">Sincronizar todo</button>
+          <div id="sync_all_status" class="status"></div>
+        </div>
+        <div class="card">
+          <h3>SYNC P1</h3>
+          <button id="btn_sync_p1" class="btn-primary">Sincronizar P1</button>
+          <div id="sync_p1_status" class="status"></div>
+        </div>
+        <div class="card">
+          <h3>SYNC PB</h3>
+          <button id="btn_sync_pb" class="btn-primary">Sincronizar PB</button>
+          <div id="sync_pb_status" class="status"></div>
+        </div>
+      </div>
+    </section>
+  </div>
 
-  const r = await fetch(`${API}/api/screens/update`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify(payload)
-  });
-  const j = await r.json();
-  document.getElementById("screenStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
-  if (r.ok) await loadScreens();
-}
-
-async function createPlaylist(){
-  const screen_name = document.getElementById("plScreen").value;
-  const name = document.getElementById("plName").value.trim();
-  const media_ids = Array.from(document.querySelectorAll("#mediaList input[type=checkbox]"))
-    .filter(x => x.checked)
-    .map(x => Number(x.dataset.mid));
-
-  if (!name) { document.getElementById("plStatus").innerHTML = `<span class="bad">Poné un nombre</span>`; return; }
-  if (!media_ids.length) { document.getElementById("plStatus").innerHTML = `<span class="bad">Marcá al menos 1 medio</span>`; return; }
-
-  const r = await fetch(`${API}/api/playlists/create`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ name, screen_name, media_ids })
-  });
-  const j = await r.json();
-  document.getElementById("plStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
-  if (r.ok) {
-    // desmarcar checks
-    document.querySelectorAll("#mediaList input[type=checkbox]").forEach(x => x.checked=false);
-    document.getElementById("plName").value = "";
-    await loadPlaylistsForScreen();
-  }
-}
-
-async function loadPlaylistsForScreen(){
-  const screen = document.getElementById("plScreen").value;
-  const pls = await (await fetch(`${API}/api/playlists/${encodeURIComponent(screen)}`)).json();
-  const sel = document.getElementById("plExisting");
-  sel.innerHTML = pls.map(p => `<option value="${p.id}">${p.name} (id:${p.id})</option>`).join("");
-}
-
-async function activatePlaylist(){
-  const screen_name = document.getElementById("plScreen").value;
-  const playlist_id = Number(document.getElementById("plExisting").value);
-  if (!playlist_id) return;
-
-  const r = await fetch(`${API}/api/playlists/activate`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ screen_name, playlist_id })
-  });
-  const j = await r.json();
-  document.getElementById("plActiveStatus").innerHTML = r.ok ? `<span class="ok">OK publicado</span>` : `<span class="bad">${j.error||'Error'}</span>`;
-}
-
-async function pair(){
-  const pairing_code = document.getElementById("pairCode").value.trim();
-  const screen_name = document.getElementById("pairScreen").value;
-  if (!pairing_code) return;
-
-  const r = await fetch(`${API}/api/player/pair`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ pairing_code, screen_name })
-  });
-  const j = await r.json();
-  document.getElementById("pairStatus").innerHTML = r.ok ? `<span class="ok">OK</span>` : `<span class="bad">${j.error||'Error'}</span>`;
-  if (r.ok) await loadPlayers();
-}
-
-async function loadPlayers(){
-  const players = await (await fetch(`${API}/api/players`)).json();
-  const box = document.getElementById("players");
-  const t = Math.floor(Date.now()/1000);
-
-  box.innerHTML = "<ul>" + players.map(p => {
-    const age = p.last_seen ? (t - p.last_seen) : 999999;
-    const online = age < 20 ? "ONLINE" : "OFFLINE";
-    const cls = age < 20 ? "ok" : "bad";
-    return `<li><b>${p.name||"Player"}</b> — code:${p.pairing_code} — screen:${p.screen_name||"-"} — <span class="${cls}">${online}</span> <small>(${age}s)</small></li>`;
-  }).join("") + "</ul>";
-}
-
-async function syncPlay(scope){
-  document.getElementById("syncStatus").innerHTML = "Enviando SYNC…";
-  const r = await fetch(`${API}/api/sync/play`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ scope })
-  });
-  const j = await r.json();
-  document.getElementById("syncStatus").innerHTML = r.ok
-    ? `<span class="ok">OK</span> targets=${j.targets} startAt=${j.startAtMs}`
-    : `<span class="bad">${j.error||'Error'}</span>`;
-}
-</script>
+  <script src="/public/js/api.js"></script>
+  <script src="/public/js/state.js"></script>
+  <script src="/public/js/tabs.js"></script>
+  <script src="/public/js/screens.js"></script>
+  <script src="/public/js/media.js"></script>
+  <script src="/public/js/playlists.js"></script>
+  <script src="/public/js/players.js"></script>
+  <script src="/public/js/layout.js"></script>
+  <script src="/public/js/sync.js"></script>
+  <script src="/public/js/main.js"></script>
 </body>
 </html>
