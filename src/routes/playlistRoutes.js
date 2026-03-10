@@ -1,23 +1,55 @@
 const express = require("express");
 const router = express.Router();
-
+const repo = require("../repositories/playlistRepository");
 const { nowMs } = require("../utils/helpers");
-const {
-  createPlaylist,
-  listPlaylistsByScreen,
-  deactivatePlaylistsByScreen,
-  activatePlaylistById
-} = require("../repositories/playlistRepository");
+
+function normalizePlaylistRow(p) {
+  let mediaIds = [];
+
+  try {
+    if (Array.isArray(p.media_ids)) {
+      mediaIds = p.media_ids;
+    } else if (typeof p.media_ids === "string") {
+      mediaIds = JSON.parse(p.media_ids || "[]");
+    }
+  } catch {
+    mediaIds = [];
+  }
+
+  return {
+    id: p.id ?? null,
+    name: p.name ?? "",
+    screen_name: p.screen_name ?? p.screen ?? "",
+    media_ids: mediaIds,
+    active: Number(p.active || 0),
+    created_at: p.created_at ?? 0,
+  };
+}
+
+router.get("/", async (req, res) => {
+  try {
+    const rows = await repo.getAllPlaylists();
+    return res.json(rows.map(normalizePlaylistRow));
+  } catch (e) {
+    console.error("GET /api/playlists error:", e);
+    return res.status(500).json([]);
+  }
+});
+
+router.get("/:screen", async (req, res) => {
+  try {
+    const screen = String(req.params.screen || "").trim();
+    const rows = await repo.getPlaylistsByScreen(screen);
+    return res.json(rows.map(normalizePlaylistRow));
+  } catch (e) {
+    console.error("GET /api/playlists/:screen error:", e);
+    return res.status(500).json([]);
+  }
+});
 
 router.post("/create", async (req, res) => {
   try {
-    let screen_name = String(req.body?.screen_name || "").trim();
-
-    if (screen_name.includes("-")) {
-      const parts = screen_name.split("-");
-      screen_name = parts[parts.length - 1].trim();
-    }
-
+    const screen_name = String(req.body?.screen_name || "").trim();
     const name = String(req.body?.name || "").trim();
     const media_ids = Array.isArray(req.body?.media_ids) ? req.body.media_ids : [];
 
@@ -29,67 +61,35 @@ router.post("/create", async (req, res) => {
       return res.status(400).json({ ok: false, error: "missing name" });
     }
 
-    await createPlaylist({
+    await repo.createPlaylist({
       screen_name,
       name,
       media_ids,
-      created_at: nowMs()
+      created_at: nowMs(),
     });
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
-    console.error("playlist create error:", e);
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
-
-router.get("/:screen", async (req, res) => {
-  try {
-    let screen = String(req.params.screen || "").trim();
-
-    if (screen.includes("-")) {
-      const parts = screen.split("-");
-      screen = parts[parts.length - 1].trim();
-    }
-
-    const rows = await listPlaylistsByScreen(screen);
-    const playlists = rows.map((p) => ({
-      id: p.id,
-      name: p.name,
-      screen_name: p.screen_name,
-      media_ids: JSON.parse(p.media_ids || "[]"),
-      active: p.active
-    }));
-
-    res.json(playlists);
-  } catch (e) {
-    console.error("playlists list error:", e);
-    res.status(500).json([]);
+    console.error("POST /api/playlists/create error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
   }
 });
 
 router.post("/activate", async (req, res) => {
   try {
-    let screen_name = String(req.body?.screen_name || "").trim();
-
-    if (screen_name.includes("-")) {
-      const parts = screen_name.split("-");
-      screen_name = parts[parts.length - 1].trim();
-    }
-
+    const screen_name = String(req.body?.screen_name || "").trim();
     const playlist_id = Number(req.body?.playlist_id || 0);
 
     if (!screen_name || !playlist_id) {
       return res.status(400).json({ ok: false, error: "missing data" });
     }
 
-    await deactivatePlaylistsByScreen(screen_name);
-    await activatePlaylistById(playlist_id);
+    await repo.activatePlaylist(screen_name, playlist_id);
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
-    console.error("playlist activate error:", e);
-    res.status(500).json({ ok: false, error: String(e) });
+    console.error("POST /api/playlists/activate error:", e);
+    return res.status(500).json({ ok: false, error: String(e) });
   }
 });
 
